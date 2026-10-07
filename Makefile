@@ -95,3 +95,30 @@ endif
 
 clean:
 	$(RM) solver mini
+
+# ---- RV32I port (rv32/) -----------------------------------------------
+# rv32-gates: host gates H1, H2, H4 (gen) and H3 (check --all, minutes).
+# rv32: regenerate the tables and the two Ripes programs.
+# rv32-ref: the riscv -O2 -march=rv32i reference build of rv32/ida.c.
+PYTHON ?= python3
+
+.PHONY: rv32 rv32-gates rv32-ref
+
+rv32/gen: rv32/gen.c rv32/model.h
+	$(CC) $(CFLAGS) -std=gnu99 $< -o $@
+
+rv32/tables.inc rv32/tables.h rv32/render.inc: rv32/gen
+	./rv32/gen rv32
+
+rv32/check: rv32/check.c rv32/ida.c rv32/ida.h rv32/model.h rv32/tables.h
+	$(CC) $(CFLAGS) -std=gnu99 rv32/check.c rv32/ida.c -o $@
+
+rv32: rv32/tables.inc rv32/render.inc
+	$(PYTHON) rv32/build.py
+
+rv32-gates: rv32/gen rv32/check
+	./rv32/gen rv32
+	./rv32/check --all
+
+rv32-ref: rv32/tables.h
+	sh rv32/ref.sh

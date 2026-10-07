@@ -224,3 +224,19 @@ empty line.
 
 See [`report.md`](report.md) for the model, algorithm, diagrams, and Frama-C
 validation notes.
+
+## RV32I port (Assignment 1)
+
+`rv32/` holds an optimal solver that runs on the Ripes simulator in RV32I
+assembly: IDA\* with a permutation table and two 2-bit pattern databases,
+128,251 bytes of static data, no heap, no recursion, no multiply.
+`docs/hackmd.md` is the write-up. Quick start:
+
+```sh
+make rv32-gates          # host gates H1-H4 (H3 solves all 3,674,160 states)
+make rv32                # regenerate rv32/ripes_cli.s and rv32/ripes_gui.s
+Ripes --mode cli --src rv32/ripes_cli.s -t asm --proc RV32_ISS --iret
+```
+
+Open `rv32/ripes_gui.s` in the Ripes GUI with a 35 x 25 LED matrix to watch
+the solution being applied.
