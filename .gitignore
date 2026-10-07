@@ -3,3 +3,7 @@
 *.swp
 solver
 mini
+*.exe
+rv32/tables.h
+rv32/tables.inc
+build/
