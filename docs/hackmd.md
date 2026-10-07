@@ -5,6 +5,8 @@ tags: computer-architecture, risc-v, ripes
 
 # Assignment 1: Optimizations and RISC-V Assembly — minirubik on RV32I
 
+contributed by < [`zhonwei985`](https://github.com/zhonwei985) >
+
 > Fork: `https://github.com/zhonwei985/minirubik` (forked from `sysprog21/minirubik` at commit `231796c`, "Merge pull request #1 from yenslife/patch-1").
 > Submitted tag: `<tag>` · HackMD revision: `<revision URL>`
 
@@ -232,6 +234,24 @@ Ripes' assembler (this build) rejects `.if`, `.macro`, `.include`, `.space`, `.r
 
 One Windows trap: `minirubik.s` and `minirubik.S` are the *same file* on NTFS. The first build overwrote its own source, so the outputs are named `ripes_*.s`.
 
+**Pseudo-instructions, as the assembler expands them.** Like every RISC-V assembler, Ripes does not execute `la`, `li`, `j` or `bnez` literally. The table bases are loaded once at the top of `solve`, and each `la` becomes a PC-relative pair (addresses and encodings from `riscv-none-elf-objdump -d -M no-aliases,numeric build/asm.elf`):
+
+```
+ 268:  00001917  auipc x18, 0x1        # la s2, PERM: x18 = pc + (0x1 << 12)
+ 26c:  7dc90913  addi  x18, x18, 2012  #             + 2012 = PERM
+ 270:  0000b997  auipc x19, 0xb        # la s3, ORI
+ 274:  55498993  addi  x19, x19, 1364
+```
+
+These run once per query, and that is the point of keeping the seven bases in `s2`–`s8`: inside the search no `la` ever executes. The face loop's own pseudo-instructions expand to single instructions, `li t6, 0` to `addi x31, x0, 0` and the latch's `bne` stays a `bne`:
+
+```
+ 540:  004f8f93  addi  x31, x31, 4      # next move code
+ 544:  f7bf9ce3  bne   x31, x27, 4bc    # until the end code in s11 (x27)
+```
+
+In this link the data follows the code; Ripes puts `.data` at `0x10000000`, so in the simulator the `auipc` immediates differ. Compare with the disassembly in Ripes' editor tab: the other encodings should match, and any difference is worth noting.
+
 ### 5.2 Register allocation and the frame stack
 
 ```
@@ -374,42 +394,142 @@ The CLI has no LED peripheral, so `build.py dump` builds a third variant. It set
 
 ## 8. Instruction-level walkthrough on RV32_5S
 
-The walkthrough follows the start of one child (`CHILD 0, …`) in the 5-stage processor with forwarding and hazard detection (`RV32_5S`). It compares v4 and v5 to show the one pipeline effect that changed the cycle count.
+The processor is Ripes' **RV32_5S**, the five-stage pipeline with forwarding and hazard detection. Its stages are separated by pipeline registers:
 
-**v4 order** (load immediately followed by its use):
+* instruction fetch (IF)
+* instruction decode and register fetch (ID)
+* execute (EX)
+* memory access (MEM)
+* register write back (WB)
 
-```asm
-lhu  t0, 0(a2)      # (1)
-add  a2, s2, t0     # (2) needs t0
-lhu  t1, 0(a3)      # (3)
-add  a3, s3, t1     # (4) needs t1
+The walkthrough follows the first child of face R (`face_loop_0` in the v5 code). That block has an I-type load, an R-type add and a B-type branch, and in `push` it is followed by an S-type store. Between them, those four instructions use every path through the datapath that the search uses.
+
 ```
+ 4bc:  00065283  lhu  x5, 0(x12)     # t0 = next[R] of the PERM record in a2
+ 4c0:  0006d303  lhu  x6, 0(x13)     # t1 = next[R] of the ORI record in a3
+ 4c4:  00075383  lhu  x7, 0(x14)
+ 4c8:  0007de03  lhu  x28, 0(x15)
+ 4cc:  00590633  add  x12, x18, x5   # a2 = PERM + 8 * p'   (the child's record)
+ 4d0:  006986b3  add  x13, x19, x6
+ 4d4:  00764283  lbu  x5, 7(x12)     # t0 = 4 * hp of the child
+ 4d8:  007a0733  add  x14, x20, x7
+ 4dc:  01ca87b3  add  x15, x21, x28
+ 4e0:  0654e063  bltu x9, x5, 540    # prune if limit4 (s1) < 4 * hp
+ ...
+ 6e8:  00c42023  sw   x12, 0(x8)     # in push: frame.p = a2
+```
+
+The register values named below are those of the reference vector `21345671111111` at its first child; record the actual values from the register panel when taking the screenshots.
+
+### 8.1 I-type load: `lhu x5, 0(x12)` at `0x4bc`
+
+**IF**
+* The PC holds `0x4bc`, which addresses the instruction memory, and `instr` reads `0x00065283`.
+* No branch is being resolved, so the mux in front of the PC selects the adder's PC + 4 = `0x4c0`.
+
+**ID**
+* The decoder splits `0x00065283`:
+  * opcode `0000011` (load)
+  * funct3 `101` (halfword, unsigned)
+  * rs1 = `x12`
+  * rd = `x5`
+  * imm = 0
+* R1 idx = `0x0c` reads `a2`, the address of the root's PERM record (in Ripes, `PERM` + 8·p, somewhere in `0x1000xxxx`).
+* An I-type instruction has no rs2, so R2 idx and its value are not used.
+
+**EX**
+* The ALU-A mux selects Reg 1, the ALU-B mux selects the immediate, and the ALU adds: Res = `a2` + 0.
+* The branch unit sees no branch.
+
+**MEM**
+* Res is the data-memory address. Read enable is 1 and the access is a halfword, zero-extended because the instruction is `lhu`.
+* The value read is the `next[R]` field of the record, 8·p′ for the permutation after one R quarter turn.
+* Write enable is 0.
+
+**WB**
+* The write-back mux selects the memory output, and the register write enable is 1.
+* `x5` (`t0`) receives 8·p′.
+
+Instructions `0x4c0`–`0x4c8` repeat this pattern for the ORI, POSA and POSB records.
+
+### 8.2 R-type with forwarding: `add x12, x18, x5` at `0x4cc`
+
+**ID**
+* Decoded as opcode `0110011`, funct3 `000`, funct7 `0000000` (add), rs1 = `x18` (`s2` = `PERM`), rs2 = `x5`, rd = `x12`.
+
+**EX: the hazard this ordering avoids.** The load that produces `x5` is four instructions earlier, at `0x4bc`. When the add is in ID, that load is in WB, so `x5` arrives either through the register file or through forwarding. Either way there is no stall.
+
+In v4 the code was `lhu x5, 0(x12)` immediately followed by `add x12, x18, x5`:
 
 | cycle | IF | ID | EX | MEM | WB |
 |---|---|---|---|---|---|
-| 1 | (1) | | | | |
-| 2 | (2) | (1) | | | |
-| 3 | (3) | (2) | (1): ALU a2+0 | | |
-| 4 | (3) | (2) | bubble | (1): read | |
-| 5 | (4) | (3) | (2): t0 forwarded MEM/WB→EX | bubble | (1) |
+| n | add | lhu | | | |
+| n+1 | next | add | lhu: address | | |
+| n+2 | next | add | bubble | lhu: read | |
+| n+3 | … | next | add: `x5` via MEM/WB → EX forward | bubble | lhu |
 
-* **IF:** the PC mux selects PC+4; instruction memory supplies the word.
-* **ID:** the decoder sets the register-file read addresses (a2 for (1); s2, t0 for (2)). The **hazard unit** compares ID's source `t0` with EX's destination of a *load* (`MemRead = 1`) and stalls: the PC and IF/ID write-enables drop to 0 and a bubble enters EX.
-* **EX:** for (1) the ALU-B mux selects the immediate and the ALU adds. For (2), one cycle later, the forwarding mux on ALU operand B selects the MEM/WB value, the loaded halfword.
-* **MEM:** for (1) data-memory read enable is 1, width halfword, zero-extended (`lhu`).
-* **WB:** register write enable is 1 and the write-back mux selects the memory output for (1), and the ALU result for (2).
+* The hazard unit compares ID's rs2 (`x5`) with the destination of a *load* in EX. It stalls: the PC and IF/ID write-enables drop to 0 for one cycle and a bubble enters EX.
+* The forwarding mux on ALU operand B then selects the MEM/WB value.
 
-Each such pair costs one bubble: 4 per child in v4.
+There were four such pairs per child. v5 issues the four loads first, so every add finds its operand ready.
 
-**v5 order** puts the four loads first and the four adds after. Each add's operand comes from a load at least two instructions earlier, so the forwarding paths deliver it with no stall. Measured: 437,520 → 383,450 cycles for the same 313,974 retired instructions (CPI 1.39 → 1.22).
+* **Measured:** 437,520 → 383,450 cycles for the same 313,974 retired instructions, CPI 1.39 → 1.22.
 
-**Branch.** `bltu s1, t0, next` is resolved in EX. When a child is pruned (taken), the two younger instructions in IF and ID are flushed (IF/ID and ID/EX clear signals asserted), and the PC mux selects the branch target.
+**MEM:** not used; read and write enables are 0.
 
-**Memory update, and why it is correct.** In `push`, `sw a2, 0(s0)` writes the child's PERM-record address into the new frame. In MEM, data-memory write enable is 1 and the address is `s0` from EX. `s0` was advanced by `addi s0, s0, 32` two instructions earlier and arrives by forwarding. On the matching `pop`, `lw a2, 0(s0)` reads it back before `s0` is decremented. That restores the parent's cursor exactly as it was when the child was generated, which is why the parent's face loop resumes on the right sibling.
+**WB:**
+* The mux selects the ALU result, and write enable is 1.
+* `x12` (`a2`) = `PERM` + 8·p′, the child's PERM record address. That one `add` serves two later loads: the next transition, and the hp byte at `0x4d4`.
 
-> **[Screenshots to add from the Ripes GUI: RV32_5S datapath at cycles 3–5 of the v4 sequence showing the stall and the forwarding mux; a taken `bltu` showing the flush; `sw a2, 0(s0)` in MEM with write enable high.]**
+### 8.3 B-type: `bltu x9, x5, 540` at `0x4e0`
 
----
+**ID**
+* Decoded as opcode `1100011`, funct3 `110` (bltu), rs1 = `x9` (`s1`, limit·4), rs2 = `x5`.
+* The immediate is +0x60, so the target is `0x540`, `face_next_0`.
+
+**Operand timing:**
+* `x5` comes from `lbu x5, 7(x12)` at `0x4d4`, three instructions earlier.
+* That load is in WB when the branch reaches EX, so the operand arrives through forwarding with no stall.
+* This is the second scheduling change in v5: in v4 the `lbu` sat directly before the branch.
+
+**EX**
+* The branch unit compares `x9 < x5` unsigned.
+* If the child is pruned (h·4 > limit·4), the branch is taken:
+  * the PC mux selects the branch target `0x540`;
+  * the two younger instructions in IF and ID are flushed, with the IF/ID and ID/EX clear signals asserted.
+* If it is not taken, the pipeline continues with `0x4e4`, the row load for table B.
+
+The §5.6 measurement depends on this same flush. A taken branch costs its instruction plus the flushed slots.
+
+### 8.4 S-type: `sw x12, 0(x8)` at `0x6e8` in `push`
+
+**Context:** a surviving child is pushed. Two instructions earlier, `addi x8, x8, 32` moved `s0` to the new frame.
+
+**ID**
+* Decoded as opcode `0100011` (store), funct3 `010` (word), rs1 = `x8`, rs2 = `x12`, imm = 0.
+* `x8` comes from the `addi` two instructions before: by forwarding, or from the register file if that `addi` has already written back.
+
+**EX**
+* The ALU computes the address `s0` + 0 in `.bss` (`FRAMES` + 32·depth).
+
+**MEM**
+* Write enable is 1, Data in is Reg 2 = `x12`, the child's PERM record address, and the access is a word.
+* This is the memory update: frame[depth].p = cursor.
+
+**WB**
+* Register write enable is 0. A store writes no register.
+
+**Why the memory update is correct.**
+* The frame at `s0` now holds the exact cursor the child was generated from: four record addresses, `HT4` + h·4 for A and B, the move code, and, in the parent frame, the resume address.
+* When the child's subtree is exhausted, `pop` reads it back with `lw x12, 0(x8)` *before* `addi x8, x8, -32`. That is the parent's cursor at its last child.
+* `jr ra` then resumes the parent's face loop at the instruction after `jal ra, push`, where the next quarter turn of that same cursor produces the next sibling.
+* The test `T5` checks the result of this bookkeeping on every case: the move codes copied out of the frames by `found` replay to solved.
+
+> **[Screenshots to add from the Ripes GUI, RV32_5S, with `rv32/ripes_cli.s`:**
+> **(1) `lhu` at `0x4bc` in MEM with read enable high;**
+> **(2) the v4 stall: open `ripes_cli.s` from commit `7c60d0b`, where the bubble enters EX;**
+> **(3) a taken `bltu` at `0x4e0` with the flush;**
+> **(4) `sw` at `0x6e8` in MEM with write enable high, and the memory view of `FRAMES`.]**
 
 ## 9. Reflection and use of AI
 
