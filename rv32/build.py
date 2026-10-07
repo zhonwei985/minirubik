@@ -64,33 +64,41 @@ def conditionals(lines, sets):
 
 
 def macros(lines):
-    defs, out, i, count = {}, [], 0, 0
-    while i < len(lines):
-        code = lines[i].split("#", 1)[0].strip()
-        m = re.match(r"\.macro\s+(\w+)\s*(.*)$", code)
-        if m:
-            params = [p.strip() for p in m.group(2).split(",") if p.strip()]
-            body, i = [], i + 1
-            while lines[i].split("#", 1)[0].strip() != ".endm":
-                body.append(lines[i])
+    defs, counter = {}, [0]
+
+    def expand(seq):
+        out, i = [], 0
+        while i < len(seq):
+            code = seq[i].split("#", 1)[0].strip()
+            m = re.match(r"\.macro\s+(\w+)\s*(.*)$", code)
+            if m:
+                params = [p.strip() for p in m.group(2).split(",") if p.strip()]
+                body, i = [], i + 1
+                while seq[i].split("#", 1)[0].strip() != ".endm":
+                    body.append(seq[i])
+                    i += 1
+                defs[m.group(1)] = (params, body)
                 i += 1
-            defs[m.group(1)] = (params, body)
+                continue
+            m = re.match(r"(\w+)\s*(.*)$", code)
+            if m and m.group(1) in defs:
+                params, body = defs[m.group(1)]
+                args = [a.strip() for a in m.group(2).split(",")] if m.group(2) else []
+                n = str(counter[0])  # \@ counts invocations, as in GNU as
+                counter[0] += 1
+                text = []
+                for b in body:
+                    for p, a in zip(params, args):
+                        b = b.replace("\\" + p, a)
+                    text.append(b.replace("\\@", n))
+                out.append("    # " + code)
+                out.extend(expand(text))  # macros may invoke macros
+            else:
+                out.append(seq[i])
             i += 1
-            continue
-        m = re.match(r"(\w+)\s*(.*)$", code)
-        if m and m.group(1) in defs:
-            params, body = defs[m.group(1)]
-            args = [a.strip() for a in m.group(2).split(",")] if m.group(2) else []
-            out.append("    # " + code)
-            for b in body:
-                for p, a in zip(params, args):
-                    b = b.replace("\\" + p, a)
-                out.append(b.replace("\\@", str(count)))
-            count += 1
-        else:
-            out.append(lines[i])
-        i += 1
-    return out
+        return out
+
+    return expand(lines)
 
 
 def local_labels(lines):

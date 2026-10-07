@@ -51,24 +51,19 @@ SOURCE: .byte 1, 4, 2, 0, 3, 5, 6, 0
 TWIST:  .byte 1, 2, 0, 2, 1, 0, 0, 0
         .byte 0, 0, 0, 1, 2, 1, 2, 0
         .byte 0, 0, 0, 0, 0, 0, 0, 0
-NAMES:  .string "R"
-        .byte 0, 0
-        .string "R2"
+# Move names with their separator, 4 bytes each so the offset is move << 2.
+NAMES:  .string "R "
         .byte 0
-        .string "R'"
+        .string "R2 "
+        .string "R' "
+        .string "B "
         .byte 0
-        .string "B"
-        .byte 0, 0
-        .string "B2"
+        .string "B2 "
+        .string "B' "
+        .string "D "
         .byte 0
-        .string "B'"
-        .byte 0
-        .string "D"
-        .byte 0, 0
-        .string "D2"
-        .byte 0
-        .string "D'"
-        .byte 0
+        .string "D2 "
+        .string "D' "
 s_colon:    .string ": "
 s_invalid:  .string "invalid state"
 s_ok:       .string "  ok\n"
@@ -133,14 +128,11 @@ L1_0:  li   a7, 4
 # run_case(a0 = 14-digit string, a1 = exact distance or 255).
 # Parses, solves, prints, replays the moves on WORK (T5), checks the length.
 #   s3 string, then move pointer   s4 exact distance   s5 length
-#   s6 end of the move list
+#   s6 end of the move list. main keeps nothing in s3-s6, so run_case does
+#   not preserve them; solve preserves s4 for it.
 run_case:
-    addi sp, sp, -20
-    sw   ra, 16(sp)
-    sw   s3, 12(sp)
-    sw   s4, 8(sp)
-    sw   s5, 4(sp)
-    sw   s6, 0(sp)
+    addi sp, sp, -4
+    sw   ra, 0(sp)
     mv   s3, a0
     mv   s4, a1
     addi s2, s2, 1
@@ -164,22 +156,18 @@ rc_valid:
     # print the moves
     la   s3, MOVES
     add  s6, s3, s5             # end of the move list
+    li   a7, 4
 rc_print:
     beq  s3, s6, rc_printed
     lbu  t2, 0(s3)
     slli t2, t2, 2
     la   a0, NAMES
     add  a0, a0, t2
-    li   a7, 4
-    ecall
-    li   a0, 32
-    li   a7, 11
     ecall
     addi s3, s3, 1
     j    rc_print
 rc_printed:
     la   a0, s_moves
-    li   a7, 4
     ecall
     mv   a0, s5
     li   a7, 1
@@ -188,7 +176,9 @@ rc_printed:
     li   a7, 4
     ecall
     # T5: replay on a copy of the parsed state with the cubie model
-    jal  ra, copy_work
+    la   a0, CUBE
+    la   a1, WORK
+    jal  t0, copy14
     la   s3, MOVES
 rc_replay:
     beq  s3, s6, rc_replayed
@@ -216,12 +206,8 @@ rc_fail:
     li   a7, 4
     ecall
 rc_out:
-    lw   ra, 16(sp)
-    lw   s3, 12(sp)
-    lw   s4, 8(sp)
-    lw   s5, 4(sp)
-    lw   s6, 0(sp)
-    addi sp, sp, 20
+    lw   ra, 0(sp)
+    addi sp, sp, 4
     ret
 
 # parse(a0 = string) -> a0 = 1 if valid. Fills CUBE. Digits 1-7 must be a
@@ -268,11 +254,14 @@ p_bad:
 
 # ---------------------------------------------------------------------------
 # solve(a0 = cube, a1 = moves out) -> a0 = length, or -1.
+# Preserves only what its callers keep live across it, s0-s2 (main) and s4
+# (run_case); every other register is clobbered.
 #
 # Iterative IDA*. Registers during the search:
 #   s0 frame        s1 limit4 (budget for a child, times 4)   s9 FRAMES
 #   s2 PERM  s3 ORI  s4 POSA  s5 POSB  s6 PDBA  s7 PDBB  s8 HT4
-#   s10 face of the move into this node (3 at the root)       s11 = 4
+#   s10 face of the move into this node (3 at the root)
+#   s11 move code that ends the current face loop, t6 the move code
 #   a2..a5 cursor: PERM, ORI, POSA, POSB record of the last child generated
 #   a6, a7 HT4 + parent's ha4, HT4 + parent's hb4    a1 bound4    ra resume
 # Frame (32 bytes): 0 p, 4 o, 8 a, 12 b (record addresses), 16 HT4 + ha4,
@@ -280,20 +269,12 @@ p_bad:
 #   address saved when this frame pushes a child.
 # ---------------------------------------------------------------------------
 solve:
-    addi sp, sp, -56
-    sw   ra, 52(sp)
-    sw   s0, 48(sp)
-    sw   s1, 44(sp)
-    sw   s2, 40(sp)
-    sw   s3, 36(sp)
-    sw   s4, 32(sp)
-    sw   s5, 28(sp)
-    sw   s6, 24(sp)
-    sw   s7, 20(sp)
-    sw   s8, 16(sp)
-    sw   s9, 12(sp)
-    sw   s10, 8(sp)
-    sw   s11, 4(sp)
+    addi sp, sp, -24
+    sw   ra, 20(sp)
+    sw   s0, 16(sp)
+    sw   s1, 12(sp)
+    sw   s2, 8(sp)
+    sw   s4, 4(sp)
     sw   a1, 0(sp)              # moves out
     la   s2, PERM
     la   s3, ORI
@@ -303,7 +284,7 @@ solve:
     la   s7, PDBB
     la   s8, HT4
     la   s9, FRAMES
-    li   s11, 4
+
 
     # Lehmer rank by Horner, p = p * (7 - i) + c_i; the factor is at most 6,
     # so the product is a short run of adds (RV32I has no mul).
@@ -453,65 +434,34 @@ sv_next:                        # the iteration found nothing: deepen
     bleu a1, t0, sv_iter
     li   a0, -1
 sv_return:
-    lw   ra, 52(sp)
-    lw   s0, 48(sp)
-    lw   s1, 44(sp)
-    lw   s2, 40(sp)
-    lw   s3, 36(sp)
-    lw   s4, 32(sp)
-    lw   s5, 28(sp)
-    lw   s6, 24(sp)
-    lw   s7, 20(sp)
-    lw   s8, 16(sp)
-    lw   s9, 12(sp)
-    lw   s10, 8(sp)
-    lw   s11, 4(sp)
-    addi sp, sp, 56
+    lw   ra, 20(sp)
+    lw   s0, 16(sp)
+    lw   s1, 12(sp)
+    lw   s2, 8(sp)
+    lw   s4, 4(sp)
+    addi sp, sp, 24
     ret
 
 # One child: advance the cursor by a quarter turn of the face whose transition
-# sits at byte \off of each record, prune on hp, then A, then B, and push if
-# the child survives. Falls through to the next child otherwise.
+# sits at byte \off of each record, prune on hp, then B, then A, and push if
+# the child survives. A pruned child branches to \next. hp goes first because
+# it costs two instructions; B before A because it prunes slightly more often
+# (61.9% against 59.6% of the children that pass hp, measured on the host).
 
-# Expand the node in frame s0 with the cursor equal to the node.
+# The three children of one face, as a loop. t6 is the move code
+# (move << 2 | face), stepped by 4 per quarter turn; the loop ends when it
+# reaches \end, held in s11. A push returns here after its whole subtree,
+# which clobbered s11, so the resume point reloads it.
+
+# Expand the node in frame s0. On entry the cursor equals the node, so the
+# first face expanded needs no reload; later faces reload it from the frame.
 expand:
-    beqz s10, face1
-    # CHILD 0, 0
-    lhu  t0, 0(a2)
-    add  a2, s2, t0
-    lhu  t1, 0(a3)
-    add  a3, s3, t1
-    lhu  t2, 0(a4)
-    add  a4, s4, t2
-    lhu  t3, 0(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_0
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_0
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_0
+    beqz s10, expand_f1         # move in was on face 0: start at face 1
+    # FACE 0, 0, 12
     li   t6, 0
-    jal  ra, push
-child_0:
-    # CHILD 0, 4
+    li   s11, 12
+face_loop_0:
+    # CHILD 0, face_next_0
     lhu  t0, 0(a2)
     add  a2, s2, t0
     lhu  t1, 0(a3)
@@ -521,66 +471,33 @@ child_0:
     lhu  t3, 0(a5)
     add  a5, s5, t3
     lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_1
+    bltu s1, t0, face_next_0
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_1
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
+    lbu  t2, 6(a5)              # byte of b within the row
+    lbu  t3, 7(a5)              # bit offset of b within the byte
     add  t2, t2, t1
     add  t2, t2, s7
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3
+    andi t2, t2, 3              # distance in B, mod 3
     add  t2, t2, a7
     lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_1
-    li   t6, 4
-    jal  ra, push
-child_1:
-    # CHILD 0, 8
-    lhu  t0, 0(a2)
-    add  a2, s2, t0
-    lhu  t1, 0(a3)
-    add  a3, s3, t1
-    lhu  t2, 0(a4)
-    add  a4, s4, t2
-    lhu  t3, 0(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_2
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
+    bltu s1, t5, face_next_0
+    lbu  t2, 6(a4)
+    lbu  t3, 7(a4)
     add  t2, t2, t1
     add  t2, t2, s6
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
+    andi t2, t2, 3
     add  t2, t2, a6
     lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_2
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_2
-    li   t6, 8
+    bltu s1, t4, face_next_0
     jal  ra, push
-child_2:
+    li   s11, 12
+face_next_0:
+    addi t6, t6, 4
+    bne  t6, s11, face_loop_0
 face1:
     li   t0, 1
     beq  s10, t0, face2
@@ -588,42 +505,12 @@ face1:
     lw   a3, 4(s0)
     lw   a4, 8(s0)
     lw   a5, 12(s0)
-    # CHILD 2, 13
-    lhu  t0, 2(a2)
-    add  a2, s2, t0
-    lhu  t1, 2(a3)
-    add  a3, s3, t1
-    lhu  t2, 2(a4)
-    add  a4, s4, t2
-    lhu  t3, 2(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_3
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_3
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_3
+expand_f1:
+    # FACE 2, 13, 25
     li   t6, 13
-    jal  ra, push
-child_3:
-    # CHILD 2, 17
+    li   s11, 25
+face_loop_2:
+    # CHILD 2, face_next_2
     lhu  t0, 2(a2)
     add  a2, s2, t0
     lhu  t1, 2(a3)
@@ -633,66 +520,33 @@ child_3:
     lhu  t3, 2(a5)
     add  a5, s5, t3
     lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_4
+    bltu s1, t0, face_next_2
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_4
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
+    lbu  t2, 6(a5)              # byte of b within the row
+    lbu  t3, 7(a5)              # bit offset of b within the byte
     add  t2, t2, t1
     add  t2, t2, s7
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3
+    andi t2, t2, 3              # distance in B, mod 3
     add  t2, t2, a7
     lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_4
-    li   t6, 17
-    jal  ra, push
-child_4:
-    # CHILD 2, 21
-    lhu  t0, 2(a2)
-    add  a2, s2, t0
-    lhu  t1, 2(a3)
-    add  a3, s3, t1
-    lhu  t2, 2(a4)
-    add  a4, s4, t2
-    lhu  t3, 2(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_5
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
+    bltu s1, t5, face_next_2
+    lbu  t2, 6(a4)
+    lbu  t3, 7(a4)
     add  t2, t2, t1
     add  t2, t2, s6
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
+    andi t2, t2, 3
     add  t2, t2, a6
     lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_5
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_5
-    li   t6, 21
+    bltu s1, t4, face_next_2
     jal  ra, push
-child_5:
+    li   s11, 25
+face_next_2:
+    addi t6, t6, 4
+    bne  t6, s11, face_loop_2
 face2:
     li   t0, 2
     beq  s10, t0, pop
@@ -700,42 +554,11 @@ face2:
     lw   a3, 4(s0)
     lw   a4, 8(s0)
     lw   a5, 12(s0)
-    # CHILD 4, 26
-    lhu  t0, 4(a2)
-    add  a2, s2, t0
-    lhu  t1, 4(a3)
-    add  a3, s3, t1
-    lhu  t2, 4(a4)
-    add  a4, s4, t2
-    lhu  t3, 4(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_6
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_6
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_6
+    # FACE 4, 26, 38
     li   t6, 26
-    jal  ra, push
-child_6:
-    # CHILD 4, 30
+    li   s11, 38
+face_loop_4:
+    # CHILD 4, face_next_4
     lhu  t0, 4(a2)
     add  a2, s2, t0
     lhu  t1, 4(a3)
@@ -745,72 +568,40 @@ child_6:
     lhu  t3, 4(a5)
     add  a5, s5, t3
     lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_7
+    bltu s1, t0, face_next_4
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
-    add  t2, t2, t1
-    add  t2, t2, s6
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
-    add  t2, t2, a6
-    lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_7
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
+    lbu  t2, 6(a5)              # byte of b within the row
+    lbu  t3, 7(a5)              # bit offset of b within the byte
     add  t2, t2, t1
     add  t2, t2, s7
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3
+    andi t2, t2, 3              # distance in B, mod 3
     add  t2, t2, a7
     lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_7
-    li   t6, 30
-    jal  ra, push
-child_7:
-    # CHILD 4, 34
-    lhu  t0, 4(a2)
-    add  a2, s2, t0
-    lhu  t1, 4(a3)
-    add  a3, s3, t1
-    lhu  t2, 4(a4)
-    add  a4, s4, t2
-    lhu  t3, 4(a5)
-    add  a5, s5, t3
-    lbu  t0, 7(a2)              # 4 * hp of the child
-    bltu s1, t0, child_8
-    lhu  t1, 6(a3)              # PDB row offset, 53 * o
-    lbu  t2, 6(a4)              # byte of a within the row
-    lbu  t3, 7(a4)              # bit offset of a within the byte
+    bltu s1, t5, face_next_4
+    lbu  t2, 6(a4)
+    lbu  t3, 7(a4)
     add  t2, t2, t1
     add  t2, t2, s6
     lbu  t2, 0(t2)
     srl  t2, t2, t3
-    andi t2, t2, 3              # distance in A, mod 3
+    andi t2, t2, 3
     add  t2, t2, a6
     lbu  t4, 0(t2)              # 4 * exact distance in A
-    bltu s1, t4, child_8
-    lbu  t2, 6(a5)
-    lbu  t3, 7(a5)
-    add  t2, t2, t1
-    add  t2, t2, s7
-    lbu  t2, 0(t2)
-    srl  t2, t2, t3
-    andi t2, t2, 3
-    add  t2, t2, a7
-    lbu  t5, 0(t2)              # 4 * exact distance in B
-    bltu s1, t5, child_8
-    li   t6, 34
+    bltu s1, t4, face_next_4
     jal  ra, push
-child_8:
+    li   s11, 38
+face_next_4:
+    addi t6, t6, 4
+    bne  t6, s11, face_loop_4
 pop:
     beq  s0, s9, sv_next        # root exhausted: deepen
     lw   a2, 0(s0)              # cursor = this node, the parent's last child
     lw   a3, 4(s0)
     lw   a4, 8(s0)
     lw   a5, 12(s0)
+    lw   t6, 24(s0)             # and the parent's loop continues from its code
     addi s0, s0, -32
     lw   a6, 16(s0)
     lw   a7, 20(s0)
@@ -824,7 +615,8 @@ pop:
 # t6 = move code, ra = where the parent resumes. A child one move above the
 # bound is not pushed: leaf decides it on the spot and returns to ra.
 push:
-    beq  s1, s11, leaf
+    li   t0, 4
+    beq  s1, t0, leaf
     sw   ra, 28(s0)
     addi s0, s0, 32
     sw   a2, 0(s0)
@@ -943,43 +735,39 @@ ex_done:
 # ---------------------------------------------------------------------------
 # Verification model: the 14-byte cubie state, independent of the rank tables.
 # ---------------------------------------------------------------------------
-copy_work:
-    la   t0, CUBE
-    la   t1, WORK
-    li   t2, 14
-L1_3:  lbu  t3, 0(t0)
-    sb   t3, 0(t1)
-    addi t0, t0, 1
-    addi t1, t1, 1
-    addi t2, t2, -1
-    bnez t2, L1_3
-    ret
+# copy14(a0 = source, a1 = destination): one cube state. Called with the
+# link in t0, so leaf routines can use it without saving ra.
+copy14:
+    addi t2, a0, 14
+L1_3:  lbu  t3, 0(a0)
+    sb   t3, 0(a1)
+    addi a0, a0, 1
+    addi a1, a1, 1
+    bne  a0, t2, L1_3
+    jr   t0
 
 # apply_move(a0 = move 0..8): face = move / 3 and turns = move % 3 + 1, by
-# subtraction, then that many quarter turns of WORK.
+# subtraction, then that many quarter turns of WORK. Uses s7 and s8, which
+# no caller keeps live.
 apply_move:
-    addi sp, sp, -12
-    sw   ra, 8(sp)
-    sw   s6, 4(sp)
-    sw   s7, 0(sp)
-    li   s6, 0                  # face
+    addi sp, sp, -4
+    sw   ra, 0(sp)
+    li   s7, 0                  # face
     li   t0, 3
 am_div:
     blt  a0, t0, am_turns
     addi a0, a0, -3
-    addi s6, s6, 1
+    addi s7, s7, 1
     j    am_div
 am_turns:
-    addi s7, a0, 1
+    addi s8, a0, 1
 am_loop:
-    mv   a0, s6
+    mv   a0, s7
     jal  ra, quarter_turn
-    addi s7, s7, -1
-    bnez s7, am_loop
-    lw   ra, 8(sp)
-    lw   s6, 4(sp)
-    lw   s7, 0(sp)
-    addi sp, sp, 12
+    addi s8, s8, -1
+    bnez s8, am_loop
+    lw   ra, 0(sp)
+    addi sp, sp, 4
     ret
 
 # quarter_turn(a0 = face): WORK.p[i] = p[src], WORK.o[i] = (o[src] + tw) mod 3
@@ -987,20 +775,14 @@ am_loop:
 # subtract is exact; done branchless: (s - 3) >> 31 is all ones exactly when
 # no reduction was needed, and masked with 3 it adds the modulus back.
 quarter_turn:
-    la   t0, WORK
-    la   t1, TMP
-    li   t2, 14
-L1_4:  lbu  t3, 0(t0)              # TMP = WORK
-    sb   t3, 0(t1)
-    addi t0, t0, 1
-    addi t1, t1, 1
-    addi t2, t2, -1
-    bnez t2, L1_4
-    slli a0, a0, 3
+    slli a2, a0, 3              # rows are 8 bytes
+    la   a0, WORK
+    la   a1, TMP
+    jal  t0, copy14             # TMP = WORK
     la   t0, SOURCE
-    add  t0, t0, a0
+    add  t0, t0, a2
     la   t1, TWIST
-    add  t1, t1, a0
+    add  t1, t1, a2
     la   t2, TMP
     la   t3, WORK
     addi a1, t3, 7
@@ -1028,16 +810,16 @@ work_solved:
     la   t0, WORK
     li   t1, 0
     li   t3, 7
-L1_5:  lbu  t2, 0(t0)
-    bne  t2, t1, L2_6
+L1_4:  lbu  t2, 0(t0)
+    bne  t2, t1, L2_5
     lbu  t2, 7(t0)
-    bnez t2, L2_6
+    bnez t2, L2_5
     addi t0, t0, 1
     addi t1, t1, 1
-    bne  t1, t3, L1_5
+    bne  t1, t3, L1_4
     li   a0, 1
     ret
-L2_6:  li   a0, 0
+L2_5:  li   a0, 0
     ret
 
 
