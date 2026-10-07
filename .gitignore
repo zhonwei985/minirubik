@@ -10,3 +10,4 @@ build/
 rv32/render.inc
 rv32/gen
 rv32/check
+rv32/__pycache__/

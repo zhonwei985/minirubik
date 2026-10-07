@@ -5,7 +5,7 @@ tags: computer-architecture, risc-v, ripes
 
 # Assignment 1: Optimizations and RISC-V Assembly — minirubik on RV32I
 
-> Fork: `https://github.com/<your-account>/minirubik` (forked from `sysprog21/minirubik` at commit `231796c`, "Merge pull request #1 from yenslife/patch-1").
+> Fork: `https://github.com/zhonwei985/minirubik` (forked from `sysprog21/minirubik` at commit `231796c`, "Merge pull request #1 from yenslife/patch-1").
 > Submitted tag: `<tag>` · HackMD revision: `<revision URL>`
 
 **Toolchain, pinned.** Everything below was measured with:
@@ -277,11 +277,11 @@ Each row is a commit, except v3, which was measured and then committed together 
 
 | Step | Change | `.text` B | Ref iret | Worst iret | Ref cycles, RV32_5S |
 | :--- | :--- | ---: | ---: | ---: | ---: |
-| v1 `0a1e053` | first working version: 9 unrolled child blocks, resume addresses, six-child leaf scan | 3,516 | 290,965 | 952,644 | — |
-| v2 `76e8d60` | candidate byte instead of leaf scan (§3.5) | 3,272 | 290,965 | 952,632 | — |
+| v1 `0a83211` | first working version: 9 unrolled child blocks, resume addresses, six-child leaf scan | 3,516 | 290,965 | 952,644 | — |
+| v2 `280cee2` | candidate byte instead of leaf scan (§3.5) | 3,272 | 290,965 | 952,632 | — |
 | v3 | one loop per face (`t6` steps by 4, ends at `s11`); no cursor reload on the first face | 2,532 | 319,682 | 1,057,135 | — |
-| v4 `d93c4e9` | B before A; `solve` saves only live registers; names carry the separator; shared copy | 2,376 | 313,974 | 1,063,427 | 437,520 |
-| v5 `e50e242` | loads scheduled ahead of uses; branching mod 3 (§5.6) | **2,372** | **313,793** | **1,063,256** | **383,450** |
+| v4 `7c60d0b` | B before A; `solve` saves only live registers; names carry the separator; shared copy | 2,376 | 313,974 | 1,063,427 | 437,520 |
+| v5 `10059e2` | loads scheduled ahead of uses; branching mod 3 (§5.6) | **2,372** | **313,793** | **1,063,256** | **383,450** |
 | GCC -O2 rv32i, same C (`ref.sh`) | | 2,884 | 524,013 | 1,786,067 | |
 
 The trade at v3 is deliberate, and the table shows its price. Unrolling the 3×3 child blocks (v2) is the fastest form, but it is 388 B *larger* than GCC. The two-instruction latch of a rolled loop costs 9.9%, buys 740 B, and v4 recovers some of it. v5 is the submitted version: **1.67× fewer instructions than GCC on the reference vector, 1.68× on the worst state, and 18% less code.**
@@ -301,12 +301,12 @@ The pass condition is a worst case, so all 2,644 distance-11 states were run thr
 
 | | Retired instructions (whole program, RV32_ISS) |
 | :--- | ---: |
-| worst | **SWEEP_WORST** (`SWEEP_WORST_STATE`) |
-| mean | SWEEP_MEAN |
-| best | SWEEP_BEST |
-| failures | SWEEP_FAIL of 2,644 |
+| worst | **1,063,256** (`32156471111111`, the state the host search predicted) |
+| mean | 136,153 |
+| best | 44,776 (`54231673123121`) |
+| failures (replay or length ≠ 11) | 0 of 2,644 |
 
-The budget is 5 × 10⁷, so the worst state uses about 2% of it.
+The budget is 5 × 10⁷, so the worst state uses about 2% of it. The v1 sweep (`measure/d11_iret_v1.csv`) gave worst 952,644 on the same state, mean 126,274, also with no failures.
 
 **Reported, not graded:** `21345671111111` retires **313,793** instructions (RV32_ISS, CLI build, single query).
 
