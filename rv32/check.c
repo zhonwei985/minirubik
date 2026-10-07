@@ -28,9 +28,44 @@ static int verify(const state_t *s, const uint8_t *moves, int n, int want)
     return is_solved(&t);
 }
 
+/* Prints the 35 x 20 net the LED renderer should show, one char per pixel. */
+static void print_net(const facelets_t *m, const state_t *s)
+{
+    static const char glyph[6] = {'W', 'R', 'G', 'Y', 'O', 'B'};
+    char px[20][36];
+    netcell_t cell[24];
+    memset(px, '.', sizeof px);
+    net_cells(m, cell);
+    for (int i = 0; i < 24; ++i)
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 4; ++x)
+                px[cell[i].y + y][cell[i].x + x] = glyph[cell_face(m, &cell[i], s)];
+    for (int y = 0; y < 20; ++y) {
+        px[y][35] = 0;
+        puts(px[y]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     uint8_t moves[16];
+    if (argc == 3 && !strcmp(argv[1], "--net")) {
+        /* The frames the GUI build draws: the start, then every quarter turn
+         * of the returned solution. */
+        state_t s;
+        facelets_t m;
+        if (!ida_parse(argv[2], s.p, s.o) || !facelet_model(&m))
+            return 2;
+        int n = ida_solve(s.p, s.o, moves);
+        print_net(&m, &s);
+        for (int i = 0; i < n; ++i)
+            for (int t = 0; t <= moves[i] % 3; ++t) {
+                s = quarter_turn(s, moves[i] / 3);
+                puts("");
+                print_net(&m, &s);
+            }
+        return 0;
+    }
     if (argc == 2 && argv[1][0] != '-') {
         state_t s;
         if (!ida_parse(argv[1], s.p, s.o)) {
@@ -41,6 +76,20 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; ++i)
             printf("%s%s", i ? " " : "", names[moves[i]]);
         printf("\n%d moves, %u nodes\n", n, ida_nodes);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "--list")) {
+        /* Every state at one exact distance, for the Ripes sweep. */
+        int want = atoi(argv[2]);
+        uint8_t *dist = exact_distances();
+        for (uint32_t x = 0; x < STATES; ++x)
+            if (dist[x] == want) {
+                state_t s;
+                char str[15];
+                unrank(x / ORIENTATIONS, x % ORIENTATIONS, &s);
+                state_string(&s, str);
+                puts(str);
+            }
         return 0;
     }
     int all = argc == 2 && !strcmp(argv[1], "--all");

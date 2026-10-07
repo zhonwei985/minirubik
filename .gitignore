@@ -7,3 +7,4 @@ mini
 rv32/tables.h
 rv32/tables.inc
 build/
+rv32/render.inc
