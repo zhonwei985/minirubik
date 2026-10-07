@@ -17,6 +17,7 @@
     .equ RENDER, 1          # build.py rewrites this line for the GUI build
     .equ DUMP, 0            # renderer self-test: print frames as text
     .equ DELAY, 150000      # GUI build: busy-wait iterations per frame
+    .equ MOD3_BRANCH, 1     # 0: branchless mod 3 instead (measured slower)
 
 # ---------------------------------------------------------------------------
 # Inputs. The query is any state, inlined at assembly time; the tests carry
@@ -450,6 +451,11 @@ sv_return:
 # the child survives. A pruned child branches to \next. hp goes first because
 # it costs two instructions; B before A because it prunes slightly more often
 # (61.9% against 59.6% of the children that pass hp, measured on the host).
+#
+# Scheduling: on the five-stage pipeline a load followed at once by its use
+# stalls a cycle, so the four transition loads go first and their adds after,
+# and the hp load sits two instructions ahead of its branch. Retired
+# instructions are unchanged; RV32_5S cycles drop (see the note).
 
 # The three children of one face, as a loop. t6 is the move code
 # (move << 2 | face), stepped by 4 per quarter turn; the loop ends when it
@@ -466,14 +472,14 @@ expand:
 face_loop_0:
     # CHILD 0, face_next_0
     lhu  t0, 0(a2)
-    add  a2, s2, t0
     lhu  t1, 0(a3)
-    add  a3, s3, t1
     lhu  t2, 0(a4)
-    add  a4, s4, t2
     lhu  t3, 0(a5)
-    add  a5, s5, t3
+    add  a2, s2, t0
+    add  a3, s3, t1
     lbu  t0, 7(a2)              # 4 * hp of the child
+    add  a4, s4, t2
+    add  a5, s5, t3
     bltu s1, t0, face_next_0
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
     lbu  t2, 6(a5)              # byte of b within the row
@@ -515,14 +521,14 @@ expand_f1:
 face_loop_2:
     # CHILD 2, face_next_2
     lhu  t0, 2(a2)
-    add  a2, s2, t0
     lhu  t1, 2(a3)
-    add  a3, s3, t1
     lhu  t2, 2(a4)
-    add  a4, s4, t2
     lhu  t3, 2(a5)
-    add  a5, s5, t3
+    add  a2, s2, t0
+    add  a3, s3, t1
     lbu  t0, 7(a2)              # 4 * hp of the child
+    add  a4, s4, t2
+    add  a5, s5, t3
     bltu s1, t0, face_next_2
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
     lbu  t2, 6(a5)              # byte of b within the row
@@ -563,14 +569,14 @@ face2:
 face_loop_4:
     # CHILD 4, face_next_4
     lhu  t0, 4(a2)
-    add  a2, s2, t0
     lhu  t1, 4(a3)
-    add  a3, s3, t1
     lhu  t2, 4(a4)
-    add  a4, s4, t2
     lhu  t3, 4(a5)
-    add  a5, s5, t3
+    add  a2, s2, t0
+    add  a3, s3, t1
     lbu  t0, 7(a2)              # 4 * hp of the child
+    add  a4, s4, t2
+    add  a5, s5, t3
     bltu s1, t0, face_next_4
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
     lbu  t2, 6(a5)              # byte of b within the row
@@ -799,9 +805,9 @@ qt_loop:
     lbu  t6, 0(t1)
     add  t5, t5, t6
     addi t5, t5, -3
-    srai t6, t5, 31
-    andi t6, t6, 3
-    add  t5, t5, t6
+    bgez t5, L2_4                 # reduction needed: done in two
+    addi t5, t5, 3              # otherwise add the modulus back: three
+L2_4:
     sb   t5, 7(t3)
     addi t0, t0, 1
     addi t1, t1, 1
@@ -814,16 +820,16 @@ work_solved:
     la   t0, WORK
     li   t1, 0
     li   t3, 7
-L1_4:  lbu  t2, 0(t0)
-    bne  t2, t1, L2_5
+L1_5:  lbu  t2, 0(t0)
+    bne  t2, t1, L2_6
     lbu  t2, 7(t0)
-    bnez t2, L2_5
+    bnez t2, L2_6
     addi t0, t0, 1
     addi t1, t1, 1
-    bne  t1, t3, L1_4
+    bne  t1, t3, L1_5
     li   a0, 1
     ret
-L2_5:  li   a0, 0
+L2_6:  li   a0, 0
     ret
 
 # ---------------------------------------------------------------------------
@@ -837,11 +843,11 @@ render_init:
     slli t1, t1, 2              # row stride in bytes
     la   t2, ROWS
     li   t3, 25
-L1_6:  sw   t0, 0(t2)
+L1_7:  sw   t0, 0(t2)
     add  t0, t0, t1
     addi t2, t2, 4
     addi t3, t3, -1
-    bnez t3, L1_6
+    bnez t3, L1_7
     ret
 
 # render: draw the 24 facelets of WORK as 4 x 3 pixel blocks of the net,
@@ -892,8 +898,8 @@ r_row:
     addi t6, t6, -1
     bnez t6, r_cell
     li   t0, DELAY
-L1_7:  addi t0, t0, -1
-    bnez t0, L1_7
+L1_8:  addi t0, t0, -1
+    bnez t0, L1_8
     ret
 
 

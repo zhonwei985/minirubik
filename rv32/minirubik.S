@@ -16,6 +16,7 @@
     .equ RENDER, 0          # build.py rewrites this line for the GUI build
     .equ DUMP, 0            # renderer self-test: print frames as text
     .equ DELAY, 150000      # GUI build: busy-wait iterations per frame
+    .equ MOD3_BRANCH, 1     # 0: branchless mod 3 instead (measured slower)
 
 # ---------------------------------------------------------------------------
 # Inputs. The query is any state, inlined at assembly time; the tests carry
@@ -455,16 +456,21 @@ sv_return:
 # the child survives. A pruned child branches to \next. hp goes first because
 # it costs two instructions; B before A because it prunes slightly more often
 # (61.9% against 59.6% of the children that pass hp, measured on the host).
+#
+# Scheduling: on the five-stage pipeline a load followed at once by its use
+# stalls a cycle, so the four transition loads go first and their adds after,
+# and the hp load sits two instructions ahead of its branch. Retired
+# instructions are unchanged; RV32_5S cycles drop (see the note).
 .macro CHILD off, next
     lhu  t0, \off(a2)
-    add  a2, s2, t0
     lhu  t1, \off(a3)
-    add  a3, s3, t1
     lhu  t2, \off(a4)
-    add  a4, s4, t2
     lhu  t3, \off(a5)
-    add  a5, s5, t3
+    add  a2, s2, t0
+    add  a3, s3, t1
     lbu  t0, 7(a2)              # 4 * hp of the child
+    add  a4, s4, t2
+    add  a5, s5, t3
     bltu s1, t0, \next
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
     lbu  t2, 6(a5)              # byte of b within the row
@@ -730,9 +736,15 @@ qt_loop:
     lbu  t6, 0(t1)
     add  t5, t5, t6
     addi t5, t5, -3
+.if MOD3_BRANCH
+    bgez t5, 2f                 # reduction needed: done in two
+    addi t5, t5, 3              # otherwise add the modulus back: three
+2:
+.else
     srai t6, t5, 31
     andi t6, t6, 3
     add  t5, t5, t6
+.endif
     sb   t5, 7(t3)
     addi t0, t0, 1
     addi t1, t1, 1
