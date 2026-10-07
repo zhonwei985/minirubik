@@ -10,8 +10,14 @@ uint32_t ida_nodes;
 
 typedef struct {
     uint16_t next[3]; /* byte offset of the quarter-turned coordinate */
-    uint16_t aux;     /* PERM: 4 * hp, ORI: 53 * o (PDB row offset) */
+    uint16_t aux;     /* ORI: 53 * o, the PDB row offset */
 } rec_t;
+
+typedef struct {
+    uint16_t next[3];
+    uint8_t cand; /* m + 1 if this is the permutation move m solves, else 0 */
+    uint8_t h4;   /* 4 * exact distance of the permutation alone */
+} perm_t;
 
 typedef struct {
     uint16_t next[3];
@@ -19,7 +25,17 @@ typedef struct {
 } pos_t;
 
 #define REC(table, off) ((const rec_t *) ((const uint8_t *) (table) + (off)))
+#define PREC(off) ((const perm_t *) ((const uint8_t *) PERM + (off)))
 #define POSR(table, off) ((const pos_t *) ((const uint8_t *) (table) + (off)))
+
+/* A node one move above the bound finishes only as one of the nine states a
+ * single move solves; its permutation names the move, its twist decides.
+ * Returns that move + 1, or 0. */
+static inline uint32_t leaf(uint32_t p8, uint32_t o8)
+{
+    uint32_t m = PREC(p8)->cand;
+    return m && TARGET[m - 1] == o8 ? m : 0;
+}
 
 static inline uint32_t pdb_get(const uint8_t *pdb, uint32_t row,
                                const pos_t *pos)
@@ -123,16 +139,24 @@ int ida_solve(const uint8_t perm[7], const uint8_t ori[7], uint8_t *moves)
     fr->hb4 = exact4(PDBB, POSB, fr->o, fr->b);
     fr->skip = 3;
 
-    uint32_t h4 = REC(PERM, fr->p)->aux;
+    uint32_t h4 = PREC(fr->p)->h4;
     if (fr->ha4 > h4)
         h4 = fr->ha4;
     if (fr->hb4 > h4)
         h4 = fr->hb4;
 
+    uint32_t last, depth; /* finishing move + 1; frames on the path */
     ida_nodes = 0;
     for (uint32_t bound4 = h4; bound4 <= 4 * IDA_MAX_MOVES; bound4 += 4) {
         uint32_t limit4 = bound4 - 4; /* budget left for a child of fr */
         fr = st;
+        if (limit4 == 0) {
+            /* Bound 1: the root itself is one move above the bound. */
+            depth = 0;
+            if ((last = leaf(fr->p, fr->o)) != 0)
+                goto found;
+            continue;
+        }
         fr->face = 0;
         for (;;) {
             if (fr->face == fr->skip)
@@ -150,32 +174,16 @@ int ida_solve(const uint8_t perm[7], const uint8_t ori[7], uint8_t *moves)
             fr->co = fr->o;
             fr->ca = fr->a;
             fr->cb = fr->b;
-            if (limit4 == 0) {
-                /* Children of this node sit at the bound, where only the
-                 * goal passes: test p and o, skip the pattern coordinates. */
-                uint32_t f = fr->face, cp = fr->cp, co = fr->co;
-                for (uint32_t t = 0; t < 3; ++t) {
-                    ++ida_nodes;
-                    cp = REC(PERM, cp)->next[f];
-                    co = REC(ORI, co)->next[f];
-                    if ((cp | co) == 0) {
-                        fr->turn = t + 1;
-                        goto found;
-                    }
-                }
-                ++fr->face;
-                continue;
-            }
         resume:
             while (fr->turn < 3) {
                 uint32_t f = fr->face;
                 ++fr->turn;
                 ++ida_nodes;
-                const rec_t *pr = REC(PERM, fr->cp = REC(PERM, fr->cp)->next[f]);
+                const perm_t *pr = PREC(fr->cp = PREC(fr->cp)->next[f]);
                 const rec_t *orr = REC(ORI, fr->co = REC(ORI, fr->co)->next[f]);
                 const pos_t *ar = POSR(POSA, fr->ca = POSR(POSA, fr->ca)->next[f]);
                 const pos_t *br = POSR(POSB, fr->cb = POSR(POSB, fr->cb)->next[f]);
-                if (pr->aux > limit4)
+                if (pr->h4 > limit4)
                     continue;
                 uint32_t row = orr->aux;
                 uint32_t ha4 = HT4[fr->ha4 + pdb_get(PDBA, row, ar)];
@@ -184,6 +192,13 @@ int ida_solve(const uint8_t perm[7], const uint8_t ori[7], uint8_t *moves)
                 uint32_t hb4 = HT4[fr->hb4 + pdb_get(PDBB, row, br)];
                 if (hb4 > limit4)
                     continue;
+                if (limit4 == 4) {
+                    /* The child is one move above the bound: no push. */
+                    depth = (uint32_t) (fr - st) + 1;
+                    if ((last = leaf(fr->cp, fr->co)) != 0)
+                        goto found;
+                    continue;
+                }
                 /* Push the child. */
                 frame_t *ch = fr + 1;
                 ch->p = fr->cp;
@@ -206,7 +221,9 @@ int ida_solve(const uint8_t perm[7], const uint8_t ori[7], uint8_t *moves)
     return -1;
 
 found:
-    for (frame_t *x = st; x <= fr; ++x)
-        moves[x - st] = (uint8_t) (x->face * 3 + x->turn - 1);
-    return (int) (fr - st) + 1;
+    /* Frames st .. st + depth - 1 hold the moves to the leaf's parent. */
+    for (uint32_t i = 0; i < depth; ++i)
+        moves[i] = (uint8_t) (st[i].face * 3 + st[i].turn - 1);
+    moves[depth] = (uint8_t) (last - 1);
+    return (int) depth + 1;
 }

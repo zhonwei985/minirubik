@@ -11,7 +11,10 @@
  *
  * Layout, every coordinate stored as a byte offset so that no index on the
  * target is ever scaled at run time:
- *   PERM[5040]  { u16 next[3] = 8 * p', u16 h4 = 4 * hp[p] }        40,320 B
+ *   PERM[5040]  { u16 next[3] = 8 * p', u8 cand, u8 h4 = 4 * hp[p] } 40,320 B
+ *               cand = m + 1 when p is the permutation of the one state
+ *               that move m solves, else 0 (the nine are distinct)
+ *   TARGET[9]   8 * o of the state that move m solves                   18 B
  *   ORI[729]    { u16 next[3] = 8 * o', u16 row = 53 * o }           5,832 B
  *   POSA[210]   { u16 next[3] = 8 * a', u8 byte = a >> 2,
  *                 u8 shift = 2 * (a & 3) }                            1,680 B
@@ -195,6 +198,31 @@ static void build_ht4(void)
                     ht4[4 * h + v] = (uint8_t) (4 * c);
 }
 
+/* The nine states one move from solved. Their permutations are distinct, so
+ * the permutation alone names the only move that can finish, and the twist
+ * rank decides whether it does. */
+static uint8_t cand[PERMUTATIONS];
+static uint16_t target8[9];
+
+static void build_candidates(void)
+{
+    static const uint8_t inverse[9] = {2, 1, 0, 5, 4, 3, 8, 7, 6};
+    memset(cand, 0, sizeof cand);
+    for (int m = 0; m < 9; ++m) {
+        state_t s;
+        unrank(0, 0, &s);
+        s = apply_move(s, inverse[m]);
+        uint32_t p = perm_rank(&s);
+        if (cand[p])
+            fail("H2: two distance-1 states share a permutation");
+        cand[p] = (uint8_t) (m + 1);
+        target8[m] = (uint16_t) (8 * ori_rank(&s));
+        state_t t = apply_move(s, m);
+        if (!is_solved(&t))
+            fail("H2: candidate move does not solve its state");
+    }
+}
+
 static uint32_t pattern_id(const pattern_t *p, const state_t *s, int which)
 {
     return p->map[positions_key(s, subset[which])];
@@ -211,8 +239,13 @@ static void gates(void)
     for (int k = 0; k < 2; ++k)
         if (pat[k].pdb[0] != 0 || pat[k].max != 9)
             fail("H2: pattern database solved entry or maximum");
+    int ncand = 0;
+    for (int i = 0; i < PERMUTATIONS; ++i)
+        ncand += cand[i] != 0;
+    if (ncand != 9 || cand[0])
+        fail("H2: candidate table");
     printf("H2 ok: hp[0]=0 max %d; A[0]=0 max %d; B[0]=0 max %d; "
-           "all entries reached\n",
+           "all entries reached; 9 distinct distance-1 permutations\n",
            mp, pat[0].max, pat[1].max);
 
     /* H4: packed accessor against the unpacked table, every index. */
@@ -351,7 +384,7 @@ static void emit(const char *dir)
     for (int p = 0; p < PERMUTATIONS; ++p) {
         for (int f = 0; f < 3; ++f)
             perm[4 * p + f] = (uint16_t) (8 * pt[f][p]);
-        perm[4 * p + 3] = (uint16_t) (4 * hp[p]);
+        perm[4 * p + 3] = (uint16_t) (cand[p] | (4 * hp[p]) << 8);
     }
     for (int o = 0; o < ORIENTATIONS; ++o) {
         for (int f = 0; f < 3; ++f)
@@ -376,6 +409,7 @@ static void emit(const char *dir)
     put_u8_block("PDBA", pat[0].packed, sizeof pat[0].packed, 32);
     put_u8_block("PDBB", pat[1].packed, sizeof pat[1].packed, 32);
     put_u8_block("HT4", ht4, sizeof ht4, 20);
+    put_u16_block("TARGET", target8, 9, 9);
     put_u8_block("MAPA", pat[0].map, KEYS, 49);
     put_u8_block("MAPB", pat[1].map, KEYS, 49);
     fprintf(hf, "#define TABLE_BYTES %zu\n", total_bytes);
@@ -438,6 +472,7 @@ int main(int argc, char **argv)
     for (int k = 0; k < 2; ++k)
         build_pattern(&pat[k], subset[k]);
     build_ht4();
+    build_candidates();
     gates();
     emit(argc > 1 ? argv[1] : "rv32");
     emit_render(argc > 1 ? argv[1] : "rv32");

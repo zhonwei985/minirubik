@@ -433,7 +433,7 @@ sv_search:
     sw   a7, 20(s0)
     # bound4 = max(hp4, ha4, hb4)
     lw   t0, 0(s0)
-    lhu  a1, 6(t0)
+    lbu  a1, 7(t0)
     bgeu a1, s10, 1f
     mv   a1, s10
 1:  bgeu a1, a0, sv_iter
@@ -448,8 +448,8 @@ sv_iter:
     lw   a6, 16(s0)
     lw   a7, 20(s0)
     bnez s1, sv_full
-    li   t6, 3                  # bound 1: scan the root's children directly
-    jal  ra, leafscan
+    li   t6, 3                  # bound 1: the root is one move above it
+    jal  ra, leaf
     j    sv_next
 sv_full:
     lw   a4, 8(s0)
@@ -489,7 +489,7 @@ sv_return:
     add  a4, s4, t2
     lhu  t3, \off(a5)
     add  a5, s5, t3
-    lhu  t0, 6(a2)              # 4 * hp of the child
+    lbu  t0, 7(a2)              # 4 * hp of the child
     bltu s1, t0, child_\@
     lhu  t1, 6(a3)              # PDB row offset, 53 * o
     lbu  t2, 6(a4)              # byte of a within the row
@@ -559,10 +559,10 @@ pop:
     jr   ra
 
 # push: the child in the cursor survived. t4, t5 = its 4 * ha, 4 * hb,
-# t6 = move code, ra = where the parent resumes. A child whose own children
-# sit at the bound is not pushed: leafscan tests them and returns to ra.
+# t6 = move code, ra = where the parent resumes. A child one move above the
+# bound is not pushed: leaf decides it on the spot and returns to ra.
 push:
-    beq  s1, s11, leafscan
+    beq  s1, s11, leaf
     sw   ra, 28(s0)
     addi s0, s0, 32
     sw   a2, 0(s0)
@@ -578,61 +578,25 @@ push:
     addi s1, s1, -4
     j    expand
 
-# Children at the bound pass only if they are the goal, and the goal is the
-# only state with p = 0 and o = 0, so only those two coordinates move here.
-.macro LEAF off, hit0, hit1, hit2
-    lhu  t0, \off(a2)
-    lhu  t1, \off(a3)
-    or   t2, t0, t1
-    beqz t2, \hit0
-    add  t0, s2, t0
-    add  t1, s3, t1
-    lhu  t0, \off(t0)
-    lhu  t1, \off(t1)
-    or   t2, t0, t1
-    beqz t2, \hit1
-    add  t0, s2, t0
-    add  t1, s3, t1
-    lhu  t0, \off(t0)
-    lhu  t1, \off(t1)
-    or   t2, t0, t1
-    beqz t2, \hit2
-.endm
-
-# leafscan: cursor a2, a3 is a node one step above the bound; t6 is the code
-# of the move into it. Returns to ra if none of its children is solved.
-leafscan:
-    andi t3, t6, 3
-    beqz t3, ls_face1
-    LEAF 0, hit0, hit1, hit2
-ls_face1:
-    li   t4, 1
-    beq  t3, t4, ls_face2
-    LEAF 2, hit3, hit4, hit5
-ls_face2:
-    li   t4, 2
-    beq  t3, t4, ls_none
-    LEAF 4, hit6, hit7, hit8
-ls_none:
+# leaf: the cursor a2, a3 is one move above the bound, so it finishes only if
+# it is one of the nine states a single move solves. Their permutations are
+# distinct: the PERM record's candidate byte names the one move that could
+# finish (move + 1, or 0), and TARGET holds the twist that state must have.
+# t6 = code of the move into the cursor. Returns to ra if it does not finish.
+leaf:
+    lbu  t0, 6(a2)
+    bnez t0, leaf_try
     jr   ra
-hit0: li a0, 0
-    j    found
-hit1: li a0, 1
-    j    found
-hit2: li a0, 2
-    j    found
-hit3: li a0, 3
-    j    found
-hit4: li a0, 4
-    j    found
-hit5: li a0, 5
-    j    found
-hit6: li a0, 6
-    j    found
-hit7: li a0, 7
-    j    found
-hit8: li a0, 8
-
+leaf_try:
+    la   t1, TARGET
+    slli t2, t0, 1
+    add  t1, t1, t2
+    lhu  t1, -2(t1)             # 8 * o of the state move t0 - 1 solves
+    sub  t2, a3, s3
+    beq  t1, t2, leaf_hit
+    jr   ra
+leaf_hit:
+    addi a0, t0, -1
 # found: a0 = last move, t6 = code into the leaf's parent (3 when that parent
 # is the root), frames s9 + 32 .. s0 hold the codes of the moves before it.
 found:
