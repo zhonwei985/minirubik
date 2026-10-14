@@ -3,3 +3,7 @@
 *.swp
 solver
 mini
+*.exe
+rv32/pdb
+rv32/pdb.h
+rv32/pdb.inc
