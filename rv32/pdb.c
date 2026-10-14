@@ -1,4 +1,4 @@
-/* Step 1: two pattern databases for the 2x2x2 cube, built on the host.
+/* Two pattern databases for the 2x2x2 cube, built on the host.
  *
  * Solve two simplified cubes exactly, by the same breadth-first search
  * solver.c uses, and keep their distances as heuristic tables:
@@ -12,133 +12,15 @@
  * so dP[p] <= d(p, o) and dO[o] <= d(p, o): neither overestimates, and
  * h = max(dP[p], dO[o]) does not either. This program checks that claim
  * (gate H1) against the exact distance of all 3,674,160 states, checks the
- * tables are complete (gate H2), and writes them as read-only data:
+ * tables are complete (gate H2), and writes them as read-only data together
+ * with the quarter-turn transition tables the search moves by:
  *
  *   OUTDIR/pdb.h     C arrays, for the host and the C reference build
- *   OUTDIR/pdb.inc   .byte lines, for the RV32I assembly
+ *   OUTDIR/pdb.inc   .byte / .half lines, for the RV32I assembly
  *
- *   cc -O2 -o pdb rv32/pdb.c && ./pdb rv32
- *
- * The cube model (source, twist, ranks) is solver.c's, unchanged, so p and o
- * are the same numbers solver.c's rank_state() combines as p * 729 + o.
+ *   cc -O2 -o rv32/pdb rv32/pdb.c && ./rv32/pdb rv32
  */
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-enum {
-    CUBIES = 7,
-    PERMUTATIONS = 5040, /* 7! */
-    ORIENTATIONS = 729,  /* 3^6: the 7th twist is fixed by the other six */
-    STATES = PERMUTATIONS * ORIENTATIONS,
-    MOVES = 9, /* R R2 R' B B2 B' D D2 D' */
-    UNKNOWN = 0xFF,
-};
-
-typedef struct {
-    uint8_t p[CUBIES], o[CUBIES];
-} state_t;
-
-/* From solver.c: each destination takes a cubie from source[face][dest]. */
-static const uint8_t source[3][CUBIES] = {
-    {1, 4, 2, 0, 3, 5, 6},
-    {0, 1, 2, 4, 5, 6, 3},
-    {0, 2, 5, 3, 1, 4, 6},
-};
-static const uint8_t twist[3][CUBIES] = {
-    {1, 2, 0, 2, 1, 0, 0},
-    {0, 0, 0, 1, 2, 1, 2},
-    {0, 0, 0, 0, 0, 0, 0},
-};
-
-static state_t quarter_turn(state_t s, int face)
-{
-    state_t t;
-    for (int i = 0; i < CUBIES; ++i) {
-        int from = source[face][i];
-        t.p[i] = s.p[from];
-        t.o[i] = (uint8_t) ((s.o[from] + twist[face][i]) % 3);
-    }
-    return t;
-}
-
-/* Move m is face m / 3 turned m % 3 + 1 quarter turns. */
-static state_t apply_move(state_t s, int m)
-{
-    for (int i = 0; i <= m % 3; ++i)
-        s = quarter_turn(s, m / 3);
-    return s;
-}
-
-/* Lehmer rank of the permutation, as in solver.c. */
-static uint32_t perm_rank(const state_t *s)
-{
-    uint32_t p = 0;
-    for (int i = 0; i < CUBIES; ++i) {
-        uint32_t smaller = 0;
-        for (int j = i + 1; j < CUBIES; ++j)
-            smaller += s->p[j] < s->p[i];
-        p = p * (uint32_t) (CUBIES - i) + smaller;
-    }
-    return p;
-}
-
-/* Base-3 rank of the first six twists, as in solver.c. */
-static uint32_t ori_rank(const state_t *s)
-{
-    uint32_t o = 0;
-    for (int i = 0; i < 6; ++i)
-        o = o * 3 + s->o[i];
-    return o;
-}
-
-/* Inverse of both ranks, as solver.c's unrank_state(). */
-static void unrank(uint32_t p, uint32_t o, state_t *s)
-{
-    uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
-    uint32_t f = 720;
-    int sum = 0;
-    for (int i = 0; i < CUBIES; ++i) {
-        uint32_t q = p / f;
-        p %= f;
-        s->p[i] = available[q];
-        for (uint32_t j = q; j + 1 < (uint32_t) (CUBIES - i); ++j)
-            available[j] = available[j + 1];
-        if (i < 5)
-            f /= (uint32_t) (6 - i);
-    }
-    for (int i = 6; i-- > 0;) {
-        s->o[i] = (uint8_t) (o % 3);
-        sum += s->o[i];
-        o /= 3;
-    }
-    s->o[6] = (uint8_t) ((3 - sum % 3) % 3);
-}
-
-/* Transition tables: the permutation after move m depends only on the
- * permutation, the twists only on the twists (report.md section 4). */
-static uint16_t perm_move[PERMUTATIONS][MOVES];
-static uint16_t ori_move[ORIENTATIONS][MOVES];
-
-static void build_moves(void)
-{
-    state_t s;
-    for (uint32_t p = 0; p < PERMUTATIONS; ++p) {
-        unrank(p, 0, &s);
-        for (int m = 0; m < MOVES; ++m) {
-            state_t t = apply_move(s, m);
-            perm_move[p][m] = (uint16_t) perm_rank(&t);
-        }
-    }
-    for (uint32_t o = 0; o < ORIENTATIONS; ++o) {
-        unrank(0, o, &s);
-        for (int m = 0; m < MOVES; ++m) {
-            state_t t = apply_move(s, m);
-            ori_move[o][m] = (uint16_t) ori_rank(&t);
-        }
-    }
-}
+#include "model.h"
 
 /* Breadth-first search from solved (rank 0) over a space of n values with a
  * move table of 9 columns. The first visit is along a shortest path, so
@@ -164,36 +46,6 @@ static uint32_t bfs(uint8_t *d, uint32_t n, uint16_t (*move)[MOVES])
     return tail;
 }
 
-/* Exact distance of every full state, rank p * 729 + o: the oracle for H1.
- * Host only; this is the table the target may not have. */
-static uint8_t *exact_distances(void)
-{
-    uint8_t *d = malloc(STATES);
-    uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
-    uint32_t head = 0, tail = 0;
-    memset(d, UNKNOWN, STATES);
-    d[0] = 0;
-    queue[tail++] = 0;
-    while (head < tail) {
-        uint32_t u = queue[head++];
-        uint32_t p = u / ORIENTATIONS, o = u % ORIENTATIONS;
-        for (int m = 0; m < MOVES; ++m) {
-            uint32_t v = perm_move[p][m] * (uint32_t) ORIENTATIONS +
-                         ori_move[o][m];
-            if (d[v] == UNKNOWN) {
-                d[v] = (uint8_t) (d[u] + 1);
-                queue[tail++] = v;
-            }
-        }
-    }
-    free(queue);
-    if (tail != STATES) {
-        fprintf(stderr, "exact BFS reached %u of %d states\n", tail, STATES);
-        exit(1);
-    }
-    return d;
-}
-
 static void histogram(const char *name, const uint8_t *d, uint32_t n)
 {
     uint32_t count[16] = {0};
@@ -216,49 +68,90 @@ static int table_max(const uint8_t *d, uint32_t n)
     return max;
 }
 
+/* ---- output ---------------------------------------------------------- */
+
+static FILE *hf, *sf;
+static size_t total;
+
+static void put_u8(const char *name, const char *what, const uint8_t *v,
+                   uint32_t n)
+{
+    fprintf(hf, "\n/* %s: %s */\nstatic const uint8_t %s[%u] = {", name, what,
+            name, n);
+    fprintf(sf, "# %s: %s, %u bytes\n%s:\n", name, what, n, name);
+    for (uint32_t i = 0; i < n; ++i) {
+        if (i % 24 == 0) {
+            fprintf(hf, "\n   ");
+            fprintf(sf, "    .byte ");
+        }
+        fprintf(hf, " %u,", v[i]);
+        fprintf(sf, "%u%s", v[i], (i % 24 == 23 || i == n - 1) ? "\n" : ",");
+    }
+    fprintf(hf, "\n};\n");
+    total += n;
+}
+
+static void put_u16(const char *name, const char *what, const uint16_t *v,
+                    uint32_t rows, uint32_t n)
+{
+    fprintf(hf, "\n/* %s: %s */\nstatic const uint16_t %s[%u][%u] = {", name,
+            what, name, rows, n);
+    fprintf(sf, "# %s: %s, %u x %u halfwords\n    .align 1\n%s:\n", name, what,
+            rows, n, name);
+    for (uint32_t r = 0; r < rows; ++r) {
+        fprintf(hf, "\n    {");
+        for (uint32_t i = 0; i < n; ++i) {
+            if (i % 16 == 0) {
+                fprintf(hf, "\n       ");
+                fprintf(sf, "    .half ");
+            }
+            fprintf(hf, " %u,", v[r * n + i]);
+            fprintf(sf, "%u%s", v[r * n + i],
+                    (i % 16 == 15 || i == n - 1) ? "\n" : ",");
+        }
+        fprintf(hf, "\n    },");
+    }
+    fprintf(hf, "\n};\n");
+    total += (size_t) rows * n * 2;
+}
+
 static void emit(const char *dir, const uint8_t *dP, const uint8_t *dO)
 {
+    static uint16_t pt[3][PERMUTATIONS], ot[3][ORIENTATIONS];
     char path[512];
     snprintf(path, sizeof path, "%s/pdb.h", dir);
-    FILE *h = fopen(path, "w");
+    hf = fopen(path, "w");
     snprintf(path, sizeof path, "%s/pdb.inc", dir);
-    FILE *s = fopen(path, "w");
-    if (!h || !s) {
+    sf = fopen(path, "w");
+    if (!hf || !sf) {
         fprintf(stderr, "cannot write into %s\n", dir);
         exit(1);
     }
-    const struct {
-        const char *name, *what;
-        const uint8_t *d;
-        uint32_t n;
-    } tables[2] = {
-        {"dP", "distance with positions only, by permutation rank", dP,
-         PERMUTATIONS},
-        {"dO", "distance with twists only, by twist rank", dO, ORIENTATIONS},
-    };
-    fprintf(h, "/* Generated by rv32/pdb.c. Do not edit. */\n"
-               "#include <stdint.h>\n");
-    fprintf(s, "# Generated by rv32/pdb.c. Do not edit.\n");
-    for (int t = 0; t < 2; ++t) {
-        fprintf(h, "\n/* %s: %s */\nstatic const uint8_t %s[%u] = {",
-                tables[t].name, tables[t].what, tables[t].name, tables[t].n);
-        fprintf(s, "# %s: %s, %u bytes\n%s:\n", tables[t].name, tables[t].what,
-                tables[t].n, tables[t].name);
-        for (uint32_t i = 0; i < tables[t].n; ++i) {
-            if (i % 24 == 0) {
-                fprintf(h, "\n   ");
-                fprintf(s, "    .byte ");
-            }
-            fprintf(h, " %u,", tables[t].d[i]);
-            int last = i % 24 == 23 || i == tables[t].n - 1;
-            fprintf(s, "%u%s", tables[t].d[i], last ? "\n" : ",");
-        }
-        fprintf(h, "\n};\n");
+    /* Move 3f is one quarter turn of face f; R2 and R' are that turn applied
+     * again, so the search needs only these three columns. */
+    for (int f = 0; f < 3; ++f) {
+        for (int p = 0; p < PERMUTATIONS; ++p)
+            pt[f][p] = perm_move[p][3 * f];
+        for (int o = 0; o < ORIENTATIONS; ++o)
+            ot[f][o] = ori_move[o][3 * f];
     }
-    fclose(h);
-    fclose(s);
-    printf("wrote %s/pdb.h and %s/pdb.inc: %d + %d = %d bytes\n", dir, dir,
-           PERMUTATIONS, ORIENTATIONS, PERMUTATIONS + ORIENTATIONS);
+    fprintf(hf, "/* Generated by rv32/pdb.c. Do not edit. */\n"
+                "#include <stdint.h>\n");
+    fprintf(sf, "# Generated by rv32/pdb.c. Do not edit.\n");
+    put_u8("dP", "distance with positions only, by permutation rank", dP,
+           PERMUTATIONS);
+    put_u8("dO", "distance with twists only, by twist rank", dO,
+           ORIENTATIONS);
+    put_u16("PT", "permutation rank after a quarter turn of R, B, D",
+            &pt[0][0], 3, PERMUTATIONS);
+    put_u16("OT", "twist rank after a quarter turn of R, B, D", &ot[0][0], 3,
+            ORIENTATIONS);
+    fclose(hf);
+    fclose(sf);
+    printf("wrote %s/pdb.h and %s/pdb.inc: %zu bytes (dP %d, dO %d, PT %d, "
+           "OT %d)\n",
+           dir, dir, total, PERMUTATIONS, ORIENTATIONS, 3 * PERMUTATIONS * 2,
+           3 * ORIENTATIONS * 2);
 }
 
 int main(int argc, char **argv)

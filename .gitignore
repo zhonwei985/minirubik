@@ -7,3 +7,4 @@ mini
 rv32/pdb
 rv32/pdb.h
 rv32/pdb.inc
+rv32/check
