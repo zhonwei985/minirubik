@@ -2,6 +2,8 @@
 """Retired-instruction measurements on the pinned Ripes build.
 
   measure.py iret STATE [PROC]       one query, no tests, default RV32_ISS
+  measure.py gcc STATE [PROC]        the same for the gcc -O2 reference
+                                     build (rv32/gcc/, built in WSL)
   measure.py sweep LIST CSV [D]      --iret for every state in LIST (one per
                                      line, from `check --list D`); with D,
                                      every printed length must equal D
@@ -18,19 +20,48 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RIPES = os.environ.get("RIPES", r"C:\Users\User\tools\ripes\Ripes.exe")
+WSL_DISTRO = os.environ.get("WSL_DISTRO", "Ubuntu-24.04")
 sys.path.insert(0, HERE)
 import build  # noqa: E402
 
 
-def run(state, proc="RV32_ISS", sets=None):
-    """Returns (retired, cycles, exit status, solution length, output)."""
-    fd, path = tempfile.mkstemp(suffix=".s")
+def wsl_path(path):
+    drive, rest = os.path.splitdrive(os.path.abspath(path))
+    return "/mnt/" + drive[0].lower() + rest.replace("\\", "/")
+
+
+def build_gcc(out, state=None, tests=True):
+    """rv32/gcc/build.sh in WSL; returns its size report."""
+    args = [wsl_path(out)] + ([state] if state else [])
+    if not tests:
+        args.append("--no-tests")
+    r = subprocess.run(
+        ["wsl.exe", "-d", WSL_DISTRO, "--", "sh",
+         wsl_path(os.path.join(HERE, "gcc", "build.sh"))] + args,
+        capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(r.stdout + r.stderr)
+    return r.stdout
+
+
+def run(state, proc="RV32_ISS", sets=None, gcc=False):
+    """Returns (retired, cycles, exit status, solution length, output).
+    gcc=True runs the gcc -O2 reference build instead of the assembly,
+    built under build/ so that WSL can reach it."""
+    tmp = None
+    if gcc:
+        tmp = os.path.join(HERE, "..", "build")
+        os.makedirs(tmp, exist_ok=True)
+    fd, path = tempfile.mkstemp(suffix=".elf" if gcc else ".s", dir=tmp)
     os.close(fd)
     try:
-        build.build(path, query=state, tests=False, sets=sets)
+        if gcc:
+            build_gcc(path, state, tests=False)
+        else:
+            build.build(path, query=state, tests=False, sets=sets)
         r = subprocess.run(
-            [RIPES, "--mode", "cli", "--src", path, "-t", "asm", "--proc",
-             proc, "--iret", "--cycles"],
+            [RIPES, "--mode", "cli", "--src", path, "-t",
+             "elf" if gcc else "asm", "--proc", proc, "--iret", "--cycles"],
             capture_output=True, text=True, timeout=3600)
     finally:
         os.remove(path)
@@ -46,9 +77,10 @@ def run(state, proc="RV32_ISS", sets=None):
 
 
 def main(argv):
-    if len(argv) >= 3 and argv[1] == "iret":
+    if len(argv) >= 3 and argv[1] in ("iret", "gcc"):
         proc = argv[3] if len(argv) > 3 else "RV32_ISS"
-        n, cycles, code, length, out = run(argv[2], proc)
+        n, cycles, code, length, out = run(argv[2], proc,
+                                           gcc=argv[1] == "gcc")
         print(out.strip())
         print("state %s proc %s iret %s cycles %s length %s exit %s"
               % (argv[2], proc, n, cycles, length, code))
