@@ -8,3 +8,5 @@ rv32/pdb
 rv32/pdb.h
 rv32/pdb.inc
 rv32/check
+build/
+rv32/__pycache__/

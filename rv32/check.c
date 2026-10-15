@@ -4,6 +4,7 @@
  *   check --d11   every distance-11 state: worst and mean children
  *   check --all   gate H3: all 3,674,160 states; each solution must be as
  *                 long as the exact BFS distance and must replay to solved
+ *   check --list D   every state at exact distance D, one per line
  *
  *   cc -O2 -o rv32/check rv32/check.c rv32/ida.c
  */
@@ -41,6 +42,23 @@ int main(int argc, char **argv)
             printf("%s%s", i ? " " : "", names[moves[i]]);
         printf("\n%d moves, %u children generated\n", n, ida_nodes);
         return n < 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "--list")) {
+        /* Every state at one exact distance, one per line, for the Ripes
+         * sweep in rv32/measure.py. */
+        int want = atoi(argv[2]);
+        build_moves();
+        uint8_t *dist = exact_distances();
+        for (uint32_t x = 0; x < STATES; ++x)
+            if (dist[x] == want) {
+                state_t s;
+                char str[15];
+                unrank(x / ORIENTATIONS, x % ORIENTATIONS, &s);
+                state_string(&s, str);
+                puts(str);
+            }
+        free(dist);
+        return 0;
     }
     int all = argc == 2 && !strcmp(argv[1], "--all");
     if (!all && !(argc == 2 && !strcmp(argv[1], "--d11"))) {
