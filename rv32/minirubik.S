@@ -6,8 +6,12 @@
 #
 #   Ripes --mode cli --src rv32/ripes_cli.s -t asm --proc RV32_ISS --iret
 #
+# It also writes rv32/ripes_gui.s with RENDER = 1, for the Ripes GUI with an
+# LED matrix of width 35 and height 25 (the CLI has no LED peripheral).
+#
 # Assemble-time switches. Ripes has no .if either; build.py resolves them.
     .equ MOD3_BRANCH, 1     # twist mod 3 in quarter_turn: 1 branch, 0 branchless
+    .equ RENDER, 0          # 1 draws every replay step on the LED matrix
 
 # A cube state is 14 bytes: the cubie at positions 0..6, then the twist at
 # positions 0..6, all 0-based. The search works on two ranks, p (permutation,
@@ -65,6 +69,87 @@ s_pass:     .string "PASS "
 s_failsum:  .string "FAIL "
 s_slash:    .string "/"
 s_nl:       .string "\n"
+
+.if RENDER
+# LED matrix, row-major, 35 x 25 pixels of 0x00RRGGBB at byte offset
+# (y * 35 + x) * 4. The net puts face rows at y = 0, 7, 14 and face columns
+# at x = 0, 9, 18, 27; a sticker is 4 x 3 pixels and faces are 1 pixel apart.
+#
+#        U
+#     L  F  R  B
+#        D
+#
+# Each face is drawn as seen from outside, with U above F and D below it.
+# One cell per sticker, 4 bytes: corner position 0..7, slot of the sticker
+# within that position, byte offset of its top-left pixel.
+    .align 2
+CELLS:  .byte 7, 0
+        .half 36                # U
+        .byte 4, 0
+        .half 52
+        .byte 0, 0
+        .half 456
+        .byte 1, 0
+        .half 472
+        .byte 7, 1
+        .half 980               # L
+        .byte 0, 2
+        .half 996
+        .byte 6, 2
+        .half 1400
+        .byte 3, 1
+        .half 1416
+        .byte 0, 1
+        .half 1016              # F
+        .byte 1, 2
+        .half 1032
+        .byte 3, 2
+        .half 1436
+        .byte 2, 1
+        .half 1452
+        .byte 1, 1
+        .half 1052              # R
+        .byte 4, 2
+        .half 1068
+        .byte 2, 2
+        .half 1472
+        .byte 5, 1
+        .half 1488
+        .byte 4, 1
+        .half 1088              # B
+        .byte 7, 2
+        .half 1104
+        .byte 5, 2
+        .half 1508
+        .byte 6, 1
+        .half 1524
+        .byte 3, 0
+        .half 1996              # D
+        .byte 2, 0
+        .half 2012
+        .byte 6, 0
+        .half 2416
+        .byte 5, 0
+        .half 2432
+CELLS_END:
+# Colours of cubie c by slot, slot 0 being its U or D sticker. A cubie with
+# twist o shows its sticker (slot + o) mod 3 in that slot, so each row holds
+# the three colours twice and the mod needs no arithmetic. 8 bytes per row,
+# row 0 the fixed corner. Colours: 0 U, 1 L, 2 F, 3 R, 4 B, 5 D.
+STICKERS:
+        .byte 0, 2, 1, 0, 2, 1, 0, 0
+        .byte 0, 3, 2, 0, 3, 2, 0, 0
+        .byte 5, 2, 3, 5, 2, 3, 0, 0
+        .byte 5, 1, 2, 5, 1, 2, 0, 0
+        .byte 0, 4, 3, 0, 4, 3, 0, 0
+        .byte 5, 3, 4, 5, 3, 4, 0, 0
+        .byte 5, 4, 1, 5, 4, 1, 0, 0
+        .byte 0, 1, 4, 0, 1, 4, 0, 0
+    .align 2
+#                U white   L orange  F green   R red     B blue    D yellow
+PALETTE: .word 0xFFFFFF, 0xFF5800, 0x009E60, 0xC41E3A, 0x0051BA, 0xFFD500
+         .word 0xFFFFFF, 0x404040   # bar: move done, move to come
+.endif
 
     .bss
     .align 2
@@ -177,6 +262,12 @@ rc_printed:
     jal  t0, copy14
     la   s3, MOVES
 rc_replay:
+.if RENDER
+    la   t0, MOVES
+    sub  a0, s3, t0             # moves applied so far
+    mv   a1, s5
+    jal  ra, render
+.endif
     beq  s3, s6, rc_replayed
     lbu  a0, 0(s3)
     jal  ra, apply_move
@@ -573,6 +664,73 @@ ws_loop:
 ws_no:
     li   a0, 0
     ret
+
+.if RENDER
+# render(a0 = moves applied, a1 = solution length): draw WORK as a net on the
+# LED matrix, then a bar of a1 segments under it with the first a0 lit.
+render:
+    li   t0, LED_MATRIX_0_BASE
+    la   t1, CELLS
+    la   t2, CELLS_END
+    la   t3, STICKERS
+    la   t4, PALETTE
+    la   a2, WORK
+rd_cell:
+    lbu  t5, 0(t1)              # position
+    lbu  t6, 1(t1)              # slot
+    beqz t5, rd_colour          # position 0: the fixed cubie 0, no twist
+    add  a3, a2, t5
+    lbu  a4, 6(a3)              # twist there, WORK[7 + position - 1]
+    add  t6, t6, a4
+    lbu  t5, -1(a3)             # cubie there, 0-based
+    addi t5, t5, 1
+rd_colour:
+    slli t5, t5, 3
+    add  t5, t5, t6
+    add  t5, t5, t3
+    lbu  t5, 0(t5)              # STICKERS[cubie][slot + twist]
+    slli t5, t5, 2
+    add  t5, t5, t4
+    lw   t5, 0(t5)
+    lhu  t6, 2(t1)
+    add  t6, t6, t0             # top-left pixel; a row is 140 bytes
+    sw   t5, 0(t6)
+    sw   t5, 4(t6)
+    sw   t5, 8(t6)
+    sw   t5, 12(t6)
+    sw   t5, 140(t6)
+    sw   t5, 144(t6)
+    sw   t5, 148(t6)
+    sw   t5, 152(t6)
+    sw   t5, 280(t6)
+    sw   t5, 284(t6)
+    sw   t5, 288(t6)
+    sw   t5, 292(t6)
+    addi t1, t1, 4
+    bne  t1, t2, rd_cell
+    # Bar: segment j is 2 x 2 pixels at x = 3j + 1, y = 22, for j = 0..10.
+    li   t1, 3084               # (22 * 35 + 1) * 4
+    add  t1, t1, t0
+    lw   a3, 24(t4)             # move done
+    lw   a4, 28(t4)             # move to come
+    li   t2, 0
+    li   t3, 11
+rd_bar:
+    mv   t5, a3
+    blt  t2, a0, rd_seg
+    mv   t5, a4
+    blt  t2, a1, rd_seg
+    li   t5, 0                  # past the end of this solution: off
+rd_seg:
+    sw   t5, 0(t1)
+    sw   t5, 4(t1)
+    sw   t5, 140(t1)
+    sw   t5, 144(t1)
+    addi t1, t1, 12
+    addi t2, t2, 1
+    bne  t2, t3, rd_bar
+    ret
+.endif
 
 # ---------------------------------------------------------------------------
 # Read-only tables from rv32/pdb.c: dP, dO, PT, OT (40,383 bytes).

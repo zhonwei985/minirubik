@@ -7,8 +7,12 @@
 #
 #   Ripes --mode cli --src rv32/ripes_cli.s -t asm --proc RV32_ISS --iret
 #
+# It also writes rv32/ripes_gui.s with RENDER = 1, for the Ripes GUI with an
+# LED matrix of width 35 and height 25 (the CLI has no LED peripheral).
+#
 # Assemble-time switches. Ripes has no .if either; build.py resolves them.
     .equ MOD3_BRANCH, 1     # twist mod 3 in quarter_turn: 1 branch, 0 branchless
+    .equ RENDER, 0          # 1 draws every replay step on the LED matrix
 
 # A cube state is 14 bytes: the cubie at positions 0..6, then the twist at
 # positions 0..6, all 0-based. The search works on two ranks, p (permutation,
@@ -66,6 +70,7 @@ s_pass:     .string "PASS "
 s_failsum:  .string "FAIL "
 s_slash:    .string "/"
 s_nl:       .string "\n"
+
 
     .bss
     .align 2
@@ -568,6 +573,7 @@ ws_loop:
 ws_no:
     li   a0, 0
     ret
+
 
 # ---------------------------------------------------------------------------
 # Read-only tables from rv32/pdb.c: dP, dO, PT, OT (40,383 bytes).

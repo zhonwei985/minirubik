@@ -6,7 +6,8 @@ the first and resolves the second against the .equ values. It can
 also replace the query and drop the test list, which is how single-state
 measurements are made.
 
-  build.py                              writes rv32/ripes_cli.s
+  build.py                              writes rv32/ripes_cli.s, and
+                                        rv32/ripes_gui.s with RENDER=1
   build.py OUT [--query STATE] [--no-tests] [--set NAME=VALUE]
 """
 import os
@@ -77,6 +78,7 @@ def build(out_path, query=None, tests=True, sets=None):
 def main(argv):
     if len(argv) == 1:
         build(os.path.join(HERE, "ripes_cli.s"))
+        build(os.path.join(HERE, "ripes_gui.s"), sets={"RENDER": "1"})
         return 0
     out, query, tests, sets, i = argv[1], None, True, {}, 2
     while i < len(argv):
